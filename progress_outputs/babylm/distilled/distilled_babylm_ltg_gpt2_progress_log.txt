@@ -1,0 +1,7 @@
+Epoch: 1, Validation PPL: 50.886993408203125, Learning rate: 4.879835382418705e-05
+Epoch: 2, Validation PPL: 41.549869537353516, Learning rate: 4.528874839961539e-05
+Epoch: 3, Validation PPL: 37.903316497802734, Learning rate: 3.9811531269167604e-05
+Epoch: 4, Validation PPL: 35.48198318481445, Learning rate: 3.2897898439971576e-05
+Epoch: 5, Validation PPL: 33.810142517089844, Learning rate: 2.521835357586816e-05
+Epoch: 6, Validation PPL: 32.429386138916016, Learning rate: 1.7517680655877322e-05
+Epoch: 7, Validation PPL: 31.600250244140625, Learning rate: 1.054271271763005e-05

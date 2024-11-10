@@ -175,147 +175,161 @@ class RNNG(nn.Module):
           stack_len -= 1
     return mask
 
-  def forward(self, x, samples = 1, is_temp = 1., has_eos=True):
-    #For has eos, if </s> exists, then inference network ignores it. 
-    #Note that </s> is predicted for training since we want the model to know when to stop.
-    #However it is ignored for PPL evaluation on the version of the PTB dataset from
-    #the original RNNG paper (Dyer et al. 2016)
-    init_emb = self.dropout(self.emb(x[:, 0]))
-    x = x[:, 1:]
-    batch, length = x.size(0), x.size(1)
-    if has_eos: 
-      parse_length = length - 1
-      parse_x = x[:, :-1]
-    else:
-      parse_length = length
-      parse_x = x
-    word_vecs =  self.dropout(self.emb(x))
-    scores = self.get_span_scores(parse_x)
-    self.scores = scores
-    scores = scores / is_temp
-    self.q_crf._forward(scores)
-    self.q_crf._entropy(scores)
-    entropy = self.q_crf.entropy[0][parse_length-1]
-    crf_input = scores.unsqueeze(1).expand(batch, samples, parse_length, parse_length)
-    crf_input = crf_input.contiguous().view(batch*samples, parse_length, parse_length)
-    for i in range(len(self.q_crf.alpha)):
-      for j in range(len(self.q_crf.alpha)):
-        self.q_crf.alpha[i][j] = self.q_crf.alpha[i][j].unsqueeze(1).expand(
-          batch, samples).contiguous().view(batch*samples)        
-    _, log_probs_action_q, tree_brackets, spans = self.q_crf._sample(crf_input, self.q_crf.alpha)
-    actions = []
-    for b in range(crf_input.size(0)):    
-      action = get_actions(tree_brackets[b])
-      if has_eos:
-        actions.append(action + [self.S, self.R]) #we train the model to generate <s> and then do a final reduce
-      else:
-        actions.append(action)
-    actions = torch.Tensor(actions).float().cuda()
-    action_masks = self.get_action_masks(actions, length) 
-    num_action = 2*length - 1
-    batch_expand = batch*samples
-    contexts = []
-    log_probs_action_p = [] #conditional prior
-    init_emb = init_emb.unsqueeze(1).expand(batch, samples, self.w_dim)
-    init_emb = init_emb.contiguous().view(batch_expand, self.w_dim)
-    init_stack = self.stack_rnn(init_emb, None)
-    x_expand = x.unsqueeze(1).expand(batch, samples, length)
-    x_expand = x_expand.contiguous().view(batch_expand, length)
-    word_vecs = self.dropout(self.emb(x_expand))
-    word_vecs = word_vecs.unsqueeze(2)
-    word_vecs_zeros = torch.zeros_like(word_vecs)
-    stack = [init_stack]
-    stack_child = [[] for _ in range(batch_expand)]
-    stack2 = [[] for _ in range(batch_expand)]
-    for b in range(batch_expand):
-      stack2[b].append([[init_stack[l][0][b], init_stack[l][1][b]] for l in range(self.num_layers)])
-    pointer = [0]*batch_expand
-    for l in range(num_action):
-      contexts.append(stack[-1][-1][0])
-      stack_input = []
-      child1_h = []
-      child1_c = []
-      child2_h = []
-      child2_c = []
-      stack_context = []
-      for b in range(batch_expand):
-        # batch all the shift/reduce operations separately
-        if actions[b][l].item() == self.R:
-          child1 = stack_child[b].pop()
-          child2 = stack_child[b].pop()
-          child1_h.append(child1[0])
-          child1_c.append(child1[1])
-          child2_h.append(child2[0])
-          child2_c.append(child2[1])
-          stack2[b].pop()
-          stack2[b].pop()
-      if len(child1_h) > 0:
-        child1_h = torch.cat(child1_h, 0)
-        child1_c = torch.cat(child1_c, 0)
-        child2_h = torch.cat(child2_h, 0)
-        child2_c = torch.cat(child2_c, 0)
-        new_child = self.tree_rnn((child1_h, child1_c), (child2_h, child2_c))
 
-      child_idx = 0
-      stack_h = [[[], []] for _ in range(self.num_layers)]
-      for b in range(batch_expand):
-        assert(len(stack2[b]) - 1 == len(stack_child[b]))
-        for k in range(self.num_layers):
-          stack_h[k][0].append(stack2[b][-1][k][0])
-          stack_h[k][1].append(stack2[b][-1][k][1])
-        if actions[b][l].item() == self.S:          
-          input_b = word_vecs[b][pointer[b]]
-          stack_child[b].append((word_vecs[b][pointer[b]], word_vecs_zeros[b][pointer[b]]))
-          pointer[b] += 1          
-        else:
-          input_b = new_child[0][child_idx].unsqueeze(0)
-          stack_child[b].append((input_b, new_child[1][child_idx].unsqueeze(0)))
-          child_idx += 1
-        stack_input.append(input_b)
-      stack_input = torch.cat(stack_input, 0)
-      stack_h_all = []
-      for k in range(self.num_layers):
-        stack_h_all.append((torch.stack(stack_h[k][0], 0), torch.stack(stack_h[k][1], 0)))
-      stack_h = self.stack_rnn(stack_input, stack_h_all)
-      stack.append(stack_h)
-      for b in range(batch_expand):
-        stack2[b].append([[stack_h[k][0][b], stack_h[k][1][b]] for k in range(self.num_layers)])
-      
-    contexts = torch.stack(contexts, 1) #stack contexts
-    action_logit_p = self.action_mlp_p(contexts).squeeze(2) 
-    action_prob_p = F.sigmoid(action_logit_p).clamp(min=1e-7, max=1-1e-7)
-    action_shift_score = (1 - action_prob_p).log()
-    action_reduce_score = action_prob_p.log()
-    action_score = (1-actions)*action_shift_score + actions*action_reduce_score
-    action_score = (action_score*action_masks).sum(1)
+#   def forward(self, x, samples = 1, is_temp = 1., has_eos=True):
+#     #For has eos, if </s> exists, then inference network ignores it. 
+#     #Note that </s> is predicted for training since we want the model to know when to stop.
+#     #However it is ignored for PPL evaluation on the version of the PTB dataset from
+#     #the original RNNG paper (Dyer et al. 2016)
+#     init_emb = self.dropout(self.emb(x[:, 0]))
+#     x = x[:, 1:]
+# #     targets = x[:, 1:]
+#     batch, length = x.size(0), x.size(1)
     
-    word_contexts = contexts[actions < 1]
-    word_contexts = word_contexts.contiguous().view(batch*samples, length, self.h_dim)
+# #     pad_tokens = torch.ones(batch, 1, dtype=x.dtype).cuda()
+# #     targets = torch.cat((targets, pad_tokens), dim=1)
+    
+#     if has_eos: 
+#       parse_length = length - 1
+#       parse_x = x[:, :-1]
+#     else:
+#       parse_length = length
+#       parse_x = x
+#     word_vecs =  self.dropout(self.emb(x))
+#     scores = self.get_span_scores(parse_x)
+#     self.scores = scores
+#     scores = scores / is_temp
+#     self.q_crf._forward(scores)
+#     self.q_crf._entropy(scores)
+#     entropy = self.q_crf.entropy[0][parse_length-1]
+#     crf_input = scores.unsqueeze(1).expand(batch, samples, parse_length, parse_length)
+#     crf_input = crf_input.contiguous().view(batch*samples, parse_length, parse_length)
+#     for i in range(len(self.q_crf.alpha)):
+#       for j in range(len(self.q_crf.alpha)):
+#         self.q_crf.alpha[i][j] = self.q_crf.alpha[i][j].unsqueeze(1).expand(
+#           batch, samples).contiguous().view(batch*samples)        
+#     _, log_probs_action_q, tree_brackets, spans = self.q_crf._sample(crf_input, self.q_crf.alpha)
+#     actions = []
+#     for b in range(crf_input.size(0)):    
+#       action = get_actions(tree_brackets[b])
+#       if has_eos:
+#         actions.append(action + [self.S, self.R]) #we train the model to generate <s> and then do a final reduce
+#       else:
+#         actions.append(action)
+#     actions = torch.Tensor(actions).float().cuda()
+#     action_masks = self.get_action_masks(actions, length) 
+#     num_action = 2*length - 1
+#     batch_expand = batch*samples
+#     contexts = []
+#     log_probs_action_p = [] #conditional prior
+#     init_emb = init_emb.unsqueeze(1).expand(batch, samples, self.w_dim)
+#     init_emb = init_emb.contiguous().view(batch_expand, self.w_dim)
+#     init_stack = self.stack_rnn(init_emb, None)
+#     x_expand = x.unsqueeze(1).expand(batch, samples, length)
+#     x_expand = x_expand.contiguous().view(batch_expand, length)
+#     word_vecs = self.dropout(self.emb(x_expand))
+#     word_vecs = word_vecs.unsqueeze(2)
+#     word_vecs_zeros = torch.zeros_like(word_vecs)
+#     stack = [init_stack]
+#     stack_child = [[] for _ in range(batch_expand)]
+#     stack2 = [[] for _ in range(batch_expand)]
+#     for b in range(batch_expand):
+#       stack2[b].append([[init_stack[l][0][b], init_stack[l][1][b]] for l in range(self.num_layers)])
+#     pointer = [0]*batch_expand
+#     for l in range(num_action):
+#       contexts.append(stack[-1][-1][0])
+#       stack_input = []
+#       child1_h = []
+#       child1_c = []
+#       child2_h = []
+#       child2_c = []
+#       stack_context = []
+#       for b in range(batch_expand):
+#         # batch all the shift/reduce operations separately
+#         if actions[b][l].item() == self.R:
+#           child1 = stack_child[b].pop()
+#           child2 = stack_child[b].pop()
+#           child1_h.append(child1[0])
+#           child1_c.append(child1[1])
+#           child2_h.append(child2[0])
+#           child2_c.append(child2[1])
+#           stack2[b].pop()
+#           stack2[b].pop()
+#       if len(child1_h) > 0:
+#         child1_h = torch.cat(child1_h, 0)
+#         child1_c = torch.cat(child1_c, 0)
+#         child2_h = torch.cat(child2_h, 0)
+#         child2_c = torch.cat(child2_c, 0)
+#         new_child = self.tree_rnn((child1_h, child1_c), (child2_h, child2_c))
 
-    log_probs_word = F.log_softmax(self.vocab_mlp(word_contexts), 2)
-    log_probs_word = torch.gather(log_probs_word, 2, x_expand.unsqueeze(2)).squeeze(2)
-    log_probs_word = log_probs_word.sum(1)
-    log_probs_word = log_probs_word.contiguous().view(batch, samples)
-    log_probs_action_p = action_score.contiguous().view(batch, samples)
-    log_probs_action_q = log_probs_action_q.contiguous().view(batch, samples)
-    actions = actions.contiguous().view(batch, samples, -1)
-    return log_probs_word, log_probs_action_p, log_probs_action_q, actions, entropy
-#     out_logits = self.vocab_mlp(word_contexts)
-# #    probs_word = F.softmax(out_logits, 2)
-# #    probs_next_word = probs_word[:, -1, :]
-#     out_logits = out_logits[:, -1, :]
-#     return out_logits
+#       child_idx = 0
+#       stack_h = [[[], []] for _ in range(self.num_layers)]
+#       for b in range(batch_expand):
+#         assert(len(stack2[b]) - 1 == len(stack_child[b]))
+#         for k in range(self.num_layers):
+#           stack_h[k][0].append(stack2[b][-1][k][0])
+#           stack_h[k][1].append(stack2[b][-1][k][1])
+#         if actions[b][l].item() == self.S:          
+#           input_b = word_vecs[b][pointer[b]]
+#           stack_child[b].append((word_vecs[b][pointer[b]], word_vecs_zeros[b][pointer[b]]))
+#           pointer[b] += 1          
+#         else:
+#           input_b = new_child[0][child_idx].unsqueeze(0)
+#           stack_child[b].append((input_b, new_child[1][child_idx].unsqueeze(0)))
+#           child_idx += 1
+#         stack_input.append(input_b)
+#       stack_input = torch.cat(stack_input, 0)
+#       stack_h_all = []
+#       for k in range(self.num_layers):
+#         stack_h_all.append((torch.stack(stack_h[k][0], 0), torch.stack(stack_h[k][1], 0)))
+#       stack_h = self.stack_rnn(stack_input, stack_h_all)
+#       stack.append(stack_h)
+#       for b in range(batch_expand):
+#         stack2[b].append([[stack_h[k][0][b], stack_h[k][1][b]] for k in range(self.num_layers)])
+      
+#     contexts = torch.stack(contexts, 1) #stack contexts
+#     action_logit_p = self.action_mlp_p(contexts).squeeze(2) 
+#     action_prob_p = F.sigmoid(action_logit_p).clamp(min=1e-7, max=1-1e-7)
+#     action_shift_score = (1 - action_prob_p).log()
+#     action_reduce_score = action_prob_p.log()
+#     action_score = (1-actions)*action_shift_score + actions*action_reduce_score
+#     action_score = (action_score*action_masks).sum(1)
+    
+#     word_contexts = contexts[actions < 1]
+#     word_contexts = word_contexts.contiguous().view(batch*samples, length, self.h_dim)
 
-  def forward_actions(self, x, actions, has_eos=True):
-    # this is for when ground through actions are available
+#     log_probs_word = F.log_softmax(self.vocab_mlp(word_contexts), 2)
+#     log_probs_word = torch.gather(log_probs_word, 2, x_expand.unsqueeze(2)).squeeze(2)
+#     log_probs_word = log_probs_word.sum(1)
+#     log_probs_word = log_probs_word.contiguous().view(batch, samples)
+#     log_probs_action_p = action_score.contiguous().view(batch, samples)
+#     log_probs_action_q = log_probs_action_q.contiguous().view(batch, samples)
+#     actions = actions.contiguous().view(batch, samples, -1)
+#     return log_probs_word, log_probs_action_p, log_probs_action_q, actions, entropy
+# #     out_logits = self.vocab_mlp(word_contexts)
+# # #    probs_word = F.softmax(out_logits, 2)
+# # #    probs_next_word = probs_word[:, -1, :]
+# #     out_logits = out_logits[:, -1, :]
+# #     return out_logits
+
+  def forward(self, x, actions, has_eos=True):
+    # this is for when ground truth actions are available
     init_emb = self.dropout(self.emb(x[:, 0]))
-    x = x[:, 1:]    
+    # Input x is from first actual token, not BOS token <s>
+    x = x[:, 1:]
+    # Targets start from the second token, so that the first token is trying to predict the second, and so on
+#     targets = x[:, 1:]
+    
     if has_eos:
         new_actions = []
         for action in actions:
             new_actions.append(action + [self.S, self.R])
         actions = new_actions
     batch, length = x.size(0), x.size(1)
+    
+#     pad_tokens = torch.ones(batch, 1, dtype=x.dtype).cuda()
+#     targets = torch.cat((targets, pad_tokens), dim=1)
+    
     word_vecs = self.dropout(self.emb(x))
     actions = torch.Tensor(actions).float().cuda()
     action_masks = self.get_action_masks(actions, length)
@@ -389,8 +403,9 @@ class RNNG(nn.Module):
     
     word_contexts = contexts[actions < 1]
     word_contexts = word_contexts.contiguous().view(batch, length, self.h_dim)
-    log_probs_word = F.log_softmax(self.vocab_mlp(word_contexts), 2)
-    log_probs_word = torch.gather(log_probs_word, 2, x.unsqueeze(2)).squeeze(2).sum(1)
+    log_probs_word = self.vocab_mlp(word_contexts) # Uncomment this when doing distillation
+#     log_probs_word = F.log_softmax(self.vocab_mlp(word_contexts), 2) # Uncomment this when training RNNG
+#     log_probs_word = torch.gather(log_probs_word, 2, x.unsqueeze(2)).squeeze(2).sum(1) # Uncomment this when training RNNG
     log_probs_action_p = action_score.contiguous().view(batch)
     actions = actions.contiguous().view(batch, 1, -1)
     return log_probs_word, log_probs_action_p, actions

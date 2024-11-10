@@ -19,7 +19,7 @@ import numpy as np
 import time
 import logging
 from data import Dataset
-from models import RNNG
+from tokenized_models import RNNG
 from utils import *
 
 parser = argparse.ArgumentParser()
@@ -36,7 +36,7 @@ parser.add_argument('--num_layers', default=2, type=int, help='number of layers 
 parser.add_argument('--dropout', default=0.5, type=float, help='dropout rate')
 # Optimization options
 parser.add_argument('--count_eos_ppl', default=0, type=int, help='whether to count eos in val PPL')
-parser.add_argument('--save_path', default='urnng.pt', help='where to save the data')
+parser.add_argument('--save_path', default='tokenized_rnng.pt', help='where to save the data')
 parser.add_argument('--num_epochs', default=18, type=int, help='number of training epochs')
 parser.add_argument('--min_epochs', default=8, type=int, help='do not decay learning rate for at least this many epochs')
 parser.add_argument('--mode', default='unsupervised', type=str, choices=['unsupervised', 'supervised'])
@@ -59,6 +59,7 @@ parser.add_argument('--print_every', type=int, default=500, help='print stats af
 
 
 def main(args):
+
   np.random.seed(args.seed)
   torch.manual_seed(args.seed)
   train_data = Dataset(args.train_file)
@@ -83,6 +84,7 @@ def main(args):
     print('loading model from ' + args.train_from)
     checkpoint = torch.load(args.train_from)
     model = checkpoint['model']
+    
   print("model architecture")
   print(model)
   q_params = []
@@ -163,10 +165,12 @@ def main(args):
         kl = (ll_action_q - ll_action_p).mean(1).detach()
         ll_word = ll_word.mean(1)
         train_q_entropy += q_entropy.sum().item()
-      else:
+      else: # i.e. supervised
         gold_actions = gold_binary_trees
+        
         ll_action_q = model.forward_tree(sents, gold_actions, has_eos=True)        
         ll_word, ll_action_p, all_actions = model.forward_actions(sents, gold_actions)
+        
         obj = ll_word + ll_action_p + ll_action_q
         kl = -ll_action_q
         iwae_ll = ll_word + ll_action_p
@@ -237,12 +241,12 @@ def main(args):
         param_group['lr'] = args.q_lr
       for param_group in action_optimizer.param_groups:
         param_group['lr'] = args.action_lr
-    if args.lr < 0.03:
+    if args.lr < 0.1:
       break
   print("Finished training!")
 
 def log_progress(epoch=None, criterion=None, lr=None):
-    with open("rnng_progress_log.txt", "a") as f:
+    with open("progress_outputs/rnng/babylm_tokenized_rnng_progress_log.txt", "a") as f:
         progress = "Epoch: {}, Validation PPL: {}, Learning rate: {}\n".format(epoch, criterion, lr)
         f.write(progress)
 

@@ -138,7 +138,10 @@ def get_nonbinary_spans(actions, SHIFT = 0, REDUCE = 1):
   num_shift = 0
   num_reduce = 0
   for action in actions:
-    # print(action, stack)
+#     print("Action: ", action)
+#     print("Stack: ", stack)
+#     print("Binary actions: ", binary_actions)
+#     print()
     if action == "SHIFT":
       nonbinary_actions.append(SHIFT)
       stack.append((pointer, pointer))

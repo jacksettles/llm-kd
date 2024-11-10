@@ -129,6 +129,8 @@ class ConstituencyTreeCRF(nn.Module):
         for u in np.arange(start, end):
           score.append(alpha[start][u][b] + alpha[u+1][end][b])
           score_idx.append([(start, u), (u+1, end)])
+        if len(score) == 0:
+            score.append(1)
         score = torch.stack(score, 0) 
         log_prob = F.log_softmax(score, dim = 0)
         if argmax:

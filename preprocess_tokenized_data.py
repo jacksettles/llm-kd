@@ -13,6 +13,7 @@ import itertools
 from collections import defaultdict
 import utils
 import re
+import json
 
 class Indexer:
     def __init__(self, symbols = ["<pad>","<unk>","<s>","</s>"]):
@@ -57,14 +58,23 @@ class Indexer:
         for word, idx in self.d.items():
             self.idx2word[idx] = word
 
-    def load_vocab(self, vocab_file):
+    def load_vocab(self, vocab_file, file_type=None):
         self.d = {}
         self.idx2word = {}
-        for line in open(vocab_file, 'r'):
-            v, k = line.strip().split()
-            self.d[v] = int(k)
-        for word, idx in self.d.items():
-            self.idx2word[idx] = word
+        
+        if file_type == "json":
+            with open(vocab_file, 'r') as f:
+                vocab = json.load(f)
+            
+            for word, index in vocab.items():
+                self.d[word] = int(index)
+                self.idx2word[int(index)] = word
+        else:
+            for line in open(vocab_file, 'r'):
+                v, k = line.strip().split()
+                self.d[v] = int(k)
+            for word, idx in self.d.items():
+                self.idx2word[idx] = word
 
 
 def is_next_open_bracket(line, start_idx):
@@ -92,18 +102,24 @@ def get_tags_tokens_lowercase(line):
             assert line_strip[i] == '('    
         if line_strip[i] == '(' and not(is_next_open_bracket(line_strip, i)): # fulfilling this condition means this is a terminal symbol
             output.append(get_between_brackets(line_strip, i))
+#     print()
 #     print('output: ', output)
+#     print()
     output_tags = []
     output_tokens = []
+    output_words = []
     output_lowercase = []
     for terminal in output:
         terminal_split = terminal.split()
 #         print(terminal, terminal_split)
-        assert len(terminal_split) == 2 # each terminal contains a POS tag and word        
+#         assert len(terminal_split) == 2 # each terminal contains a POS tag and word        
         output_tags.append(terminal_split[0])
-        output_tokens.append(terminal_split[1])
-        output_lowercase.append(terminal_split[1].lower())
-    return [output_tags, output_tokens, output_lowercase]    
+
+        output_tokens.extend(terminal_split[1:])
+        whole_word = "".join(terminal_split[1:])
+        output_words.append(whole_word)
+        output_lowercase.extend([element.lower() for element in terminal_split[1:]])
+    return [output_tags, output_tokens, output_words, output_lowercase]    
 
 def get_nonterminal(line, start_idx):
     assert line[start_idx] == '(' # make sure it's an open bracket
@@ -131,7 +147,9 @@ def get_actions(line):
                 while line_strip[i] != '(': # get the next open bracket, which may be a terminal or another non-terminal
                     i += 1
             else: # it's a terminal symbol
-                output_actions.append('SHIFT')
+                all_tokens = get_between_brackets(line_strip, i).split()[1:]
+                for _ in range(len(all_tokens)):
+                    output_actions.append('SHIFT')
                 while line_strip[i] != ')':
                     i += 1
                 i += 1
@@ -165,9 +183,9 @@ def get_data(args):
         max_seqlength = 0
         for tree in open(textfile, 'r'):
             tree = tree.strip()
-            tags, sent, sent_lower = get_tags_tokens_lowercase(tree)
+            tags, sent, sent_words, sent_lower = get_tags_tokens_lowercase(tree)
             
-            assert(len(tags) == len(sent))
+            assert(len(tags) == len(sent_words))
             if lowercase == 1:
                 sent = sent_lower
             if replace_num == 1:
@@ -189,42 +207,49 @@ def get_data(args):
             newseqlength += 2 #add 2 for EOS and BOS
         sents = np.zeros((num_sents, newseqlength), dtype=int)
         sent_lengths = np.zeros((num_sents,), dtype=int)
+        
         dropped = 0
         sent_id = 0
         other_data = []
         for tree in open(textfile, 'r'):
             tree = tree.strip()
             action = get_actions(tree)
-            tags, sent, sent_lower = get_tags_tokens_lowercase(tree)
-            assert(len(tags) == len(sent))
+            tags, sent, sent_words, sent_lower = get_tags_tokens_lowercase(tree)
+            
+            assert(len(tags) == len(sent_words))
             if lowercase == 1:
                 sent = sent_lower
             if (len(sent) > seqlength and apply_length_filter == 1) or len(sent) < minseqlength:
                 continue
-            sent_str = " ".join(sent)
+            
+            sent_str = " ".join(sent_words)
+            
             if replace_num == 1:
                 sent = [clean_number(w) for w in sent]
             if include_boundary == 1:
                 sent = [indexer.BOS] + sent + [indexer.EOS]
+                sent_words = [indexer.BOS] + sent_words + [indexer.EOS]
             max_sent_l = max(len(sent), max_sent_l)
             sent_pad = pad(sent, newseqlength, indexer.PAD)
-            sents[sent_id] = np.array(indexer.convert_sequence(sent_pad), dtype=int)
-            sent_lengths[sent_id] = (sents[sent_id] != 0).sum()
+            sent_words_pad = pad(sent_words, newseqlength, indexer.PAD)
+       
+            sents[sent_id] = np.array(indexer.convert_sequence(sent_pad), dtype=int)    
+            
+            # Indexer's pad token is automatically 0, but if you load a preset vocab, manually enter the index
+            # of the padding token in that vocab in the line below (in the (sents[sent_id] != num).sum() part.
+            # Put the padding token's index where num is
+            sent_lengths[sent_id] = (sents[sent_id] != 1).sum()
+#             print(sent_lengths)
+#             print(sent_lengths.shape)
+            
             span, binary_actions, nonbinary_actions = utils.get_nonbinary_spans(action)
             other_data.append([sent_str, tags, action, 
                                binary_actions, nonbinary_actions, span, tree])
-#             print("Sent: ", sent)
-            print("Actions length: ", len(action))
-            print("Length of sent: ", len(sent))
-            print("Length of binary actions: ", len(binary_actions))
-            print()
-            sent_id += 1
-            if sent_id == 4:
-                sys.exit(0)
+            
             
             assert(2*(len(sent)- 2) - 1 == len(binary_actions))
             assert(sum(binary_actions) + 1 == len(sent) - 2)
-#             sent_id += 1
+            sent_id += 1
             if sent_id % 100000 == 0:
                 print("{}/{} sentences processed".format(sent_id, num_sents))
         print(sent_id, num_sents)
@@ -262,6 +287,7 @@ def get_data(args):
         for i in range(len(batch_idx)-1):
             batch_l.append(batch_idx[i+1] - batch_idx[i])
             batch_w.append(sent_l[batch_idx[i]])
+            
 
         # Write output
         f = {}
@@ -280,37 +306,39 @@ def get_data(args):
         pickle.dump(f, open(outfile, 'wb'))
         return max_sent_l
 
+    # I APPLIED THE SEQUENCE LENGTH FILTER TO TEST AND VAL DATA AS WELL, SO MAX SENT LENGTH IS 200
     print("First pass through data to get vocab...")
     num_sents_train, train_seqlength = make_vocab(args.trainfile, args.seqlength, args.minseqlength,
                                                   args.lowercase, args.replace_num, 1, 1)
     print("Number of sentences in training: {}".format(num_sents_train))
     num_sents_valid, valid_seqlength = make_vocab(args.valfile, args.seqlength, args.minseqlength, 
-                                                  args.lowercase, args.replace_num, 0, 0)
+                                                  args.lowercase, args.replace_num, 0, 1)
     print("Number of sentences in valid: {}".format(num_sents_valid))
     num_sents_test, test_seqlength = make_vocab(args.testfile, args.seqlength, args.minseqlength, 
-                                                args.lowercase, args.replace_num, 0, 0)
+                                                args.lowercase, args.replace_num, 0, 1)
     print("Number of sentences in test: {}".format(num_sents_test))
 
     if args.vocabminfreq >= 0:
-        indexer.prune_vocab(args.vocabminfreq, True)        
+        indexer.prune_vocab(args.vocabminfreq, True)
     else:
         indexer.prune_vocab(args.vocabsize, False)
     if args.vocabfile != '':
         print('Loading pre-specified source vocab from ' + args.vocabfile)
-        indexer.load_vocab(args.vocabfile)
+        indexer.load_vocab(args.vocabfile, args.vocab_file_type)
     indexer.write(args.outputfile + ".dict")
     print("Vocab size: Original = {}, Pruned = {}".format(len(indexer.vocab),
                                                           len(indexer.d)))
     print(train_seqlength, valid_seqlength, test_seqlength)
     max_sent_l = 0
+    # I APPLIED THE SEQUENCE LENGTH FILTER TO TEST AND VAL DATA AS WELL, SO MAX SENT LENGTH IS 200
     max_sent_l = convert(args.testfile, args.lowercase, args.replace_num, 
                          args.batchsize, test_seqlength, args.minseqlength, 
                          args.outputfile + "-test.pkl", num_sents_test,
-                         max_sent_l, args.shuffle, args.include_boundary, 0)
+                         max_sent_l, args.shuffle, args.include_boundary, 1)
     max_sent_l = convert(args.valfile, args.lowercase, args.replace_num, 
                          args.batchsize, valid_seqlength, args.minseqlength, 
                          args.outputfile + "-val.pkl", num_sents_valid,
-                         max_sent_l, args.shuffle, args.include_boundary, 0)
+                         max_sent_l, args.shuffle, args.include_boundary, 1)
     max_sent_l = convert(args.trainfile, args.lowercase, args.replace_num, 
                          args.batchsize, args.seqlength,  args.minseqlength,
                          args.outputfile + "-train.pkl", num_sents_train,
@@ -345,6 +373,10 @@ def main(arguments):
                                           "then including this will ignore srcvocabsize and use the"
                                           "vocab provided here.",
                                           type = str, default='')
+    parser.add_argument('--vocab_file_type', help="By default we assume that the vocab is a .txt file"
+                        " with each line corresponding to a word and an index in the format: word <space> index."
+                        " Otherwise, if loading a vocab from a .json (like from a tokenize), specify json here.",
+                        type = str, default = '', choices=['json', ''])
     parser.add_argument('--shuffle', help="If = 1, shuffle sentences before sorting (based on  "
                                            "source length).",
                                           type = int, default = 1)
