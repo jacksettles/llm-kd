@@ -1,0 +1,1 @@
+python preprocess.py --trainfile data/train-ptb.txt --valfile data/val-ptb.txt --testfile data/test-ptb.txt --outputfile data/scrap/ptb --vocabminfreq 1 --lowercase 0 --replace_num 0 --batchsize 16

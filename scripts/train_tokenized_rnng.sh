@@ -1,0 +1,1 @@
+python train_tokenized_rnng.py --train_file data/tokenized_data/ptb-train.pkl --val_file data/tokenized_data/ptb-val.pkl --save_path tokenized_urnng.pt --mode unsupervised --train_q_epochs 18 --gpu 0
