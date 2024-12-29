@@ -1,0 +1,1 @@
+torchrun --standalone --nproc_per_node=gpu multi_gpu_gpt2_train.py --ff_dim 768 --num_heads 4 --num_blocks 12 --embed_dim 768 --num_epochs 10 --distill 1 --teacher_model saved_models/rnng/tokenized_rnng.pt --savepath jack-throwaway-test-4gpu-distilled --alpha 0.5 --break_value 5 --trainfile data/tokenized_data/ptb-train.pkl --valfile data/tokenized_data/ptb-val.pkl
