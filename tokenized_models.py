@@ -312,7 +312,7 @@ class RNNG(nn.Module):
 # #     out_logits = out_logits[:, -1, :]
 # #     return out_logits
 
-  def forward(self, x, actions, has_eos=True):
+  def forward(self, x, actions, has_eos=True, device=None):
     # this is for when ground truth actions are available
     init_emb = self.dropout(self.emb(x[:, 0]))
     # Input x is from first actual token, not BOS token <s>
@@ -331,7 +331,8 @@ class RNNG(nn.Module):
 #     targets = torch.cat((targets, pad_tokens), dim=1)
     
     word_vecs = self.dropout(self.emb(x))
-    actions = torch.Tensor(actions).float().cuda()
+    # actions = torch.Tensor(actions).float().cuda() # replacing this line with below to fix multi device setup
+    actions = torch.tensor(actions, dtype=torch.float32, device=device)
     action_masks = self.get_action_masks(actions, length)
     num_action = 2*length - 1
     contexts = []

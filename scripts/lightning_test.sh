@@ -1,0 +1,1 @@
+srun python lightning_modules.py --ff_dim 768 --num_heads 4 --num_blocks 8 --embed_dim 768 --num_epochs 5 --distill 0 --teacher_model saved_models/rnng/tokenized_rnng.pt --savepath ptb/lightning-test-4gpu --alpha 0.4 --break_value 5 --trainfile data/tokenized_data/ptb-train.pkl --valfile data/tokenized_data/ptb-val.pkl

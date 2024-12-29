@@ -11,9 +11,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
-from transformers import AutoTokenizer
+# from transformers import AutoTokenizer
 from tokenizers import ByteLevelBPETokenizer
-from transformers import GPT2Tokenizer
+# from transformers import GPT2Tokenizer
 import os
 import sys
 import numpy as np
